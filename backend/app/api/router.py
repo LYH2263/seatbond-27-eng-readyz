@@ -1,9 +1,12 @@
+from collections.abc import Callable
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models.models import ConflictLog, Hall, SeatHold, Showtime
 from app.schemas.schemas import (
@@ -22,6 +25,7 @@ from app.services.bond_engine import (
     find_bond_across_rows,
     find_contiguous_block,
 )
+from app.services.healthcheck import DbProbeTimeout, probe_database
 
 api_router = APIRouter()
 
@@ -38,7 +42,35 @@ def _hall_out(h: Hall) -> HallOut:
 
 @api_router.get("/health")
 def health():
+    """存活探针：仅表示进程存活，不触碰数据库。"""
     return {"status": "ok"}
+
+
+def get_readiness_probe() -> Callable[[], None]:
+    """就绪探针依赖：返回执行一次只读数据库探测的可调用对象。
+
+    测试可用 dependency_overrides 替换为替身，模拟连接失败或超时。
+    """
+    timeout = settings.readyz_timeout_seconds
+    return lambda: probe_database(timeout)
+
+
+@api_router.get("/readyz")
+def readyz(probe: Callable[[], None] = Depends(get_readiness_probe)):
+    """就绪探针：进程存活且数据库只读探测通过才返回 200，否则 503。"""
+    try:
+        probe()
+    except DbProbeTimeout:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reason": "db_timeout"},
+        )
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reason": "db_unreachable"},
+        )
+    return {"status": "ready"}
 
 
 @api_router.get("/halls", response_model=list[HallOut])
