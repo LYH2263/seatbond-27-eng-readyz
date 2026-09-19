@@ -21,6 +21,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      # 就绪探针：数据库不可达或超时时返回 503，urlopen 抛错即非健康
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; r=urllib.request.urlopen('http://localhost:9100/api/readyz', timeout=3); sys.exit(0 if json.load(r).get('status') == 'ready' else 1)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
   frontend:
     build: ./frontend
     ports: ["4100:80"]

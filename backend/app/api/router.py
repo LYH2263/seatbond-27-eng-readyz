@@ -1,10 +1,11 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import DatabaseUnavailable, get_db, ping_database
 from app.models.models import ConflictLog, Hall, SeatHold, Showtime
 from app.schemas.schemas import (
     ConflictOut,
@@ -38,7 +39,30 @@ def _hall_out(h: Hall) -> HallOut:
 
 @api_router.get("/health")
 def health():
+    """存活探针（liveness）：仅表示进程存活，不检查数据库等依赖。
+
+    即使数据库不可用也返回 200 —— 编排平台据此决定是否重启实例，
+    而不是因为临时依赖故障杀掉进程。
+    """
     return {"status": "ok"}
+
+
+@api_router.get("/readyz")
+def readyz():
+    """就绪探针（readiness）：进程存活且数据库可连接才可接流量。
+
+    只做只读探测（SELECT 1），不建表、不创建持座、不写业务表。
+    数据库不可用或探测超时时返回 503，正文含稳定字段
+    status=not_ready 与简要 reason。
+    """
+    try:
+        ping_database()
+    except DatabaseUnavailable as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reason": f"database unavailable: {exc}"},
+        )
+    return {"status": "ready", "checks": {"database": "ok"}}
 
 
 @api_router.get("/halls", response_model=list[HallOut])
